@@ -17,11 +17,11 @@
 
 **Blocked by:** None
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## Critères d'acceptation
-- [ ] `pio test -e native` passe
-- [ ] `pio run -e test` et `pio run -e prod` compilent
-- [ ] Le fichier d'identifiants est ignoré, l'exemple est versionné
-- [ ] `analyste-logs` existe
-- [ ] Les deux `CLAUDE.md` de sous-dossier existent
+- [x] `pio test -e native` passe
+- [x] `pio run -e test` et `pio run -e prod` compilent
+- [x] Le fichier d'identifiants est ignoré, l'exemple est versionné
+- [x] `analyste-logs` existe
+- [x] Les deux `CLAUDE.md` de sous-dossier existent
