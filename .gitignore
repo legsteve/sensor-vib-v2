@@ -1,2 +1,4 @@
 .pio/
 .vscode/
+logs/
+include/wifi_credentials.h
