@@ -12,7 +12,7 @@ contredite reçoit une nouvelle entrée qui cite l'ancienne.
 ```
 ### AAAA-MM-JJ — Titre court
 - Statut      : MESURÉ | SUPPOSÉ
-- Palier      : PN
+- Ticket      : NN
 - Env de build: native | test | prod  (+ commit court)
 - Conditions  : alimentation (batterie / USB), CDC actif ou non, matériel
 - Mesure      : ce qui a été observé (valeur, durée, fichier de log) ;

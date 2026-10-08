@@ -1,6 +1,6 @@
 # Spécification — Capteur de veille (refonte)
 
-Version du 2026-10-06
+Version du 2026-10-07. Vocabulaire : `CONTEXT.md`. Décisions structurantes : `docs/adr/`.
 
 ## Objet et principes
 
@@ -25,7 +25,7 @@ La v1 couvre le cycle complet sommeil, réveil et transmission, avec les deux mo
 | Modes Motion et Rotation, configurables | v1 | Motion par défaut, seul mode déjà validé |
 | Transmission HTTPS vers le serveur existant | v1 | Protocole étendu, voir Réseau |
 | Logs BLE lus par l'agent | v1 | Env `test` seulement |
-| Portail captif de configuration | v1 si possible | Repli : identifiants inscrits à l'atelier par série |
+| Mode recharge et portail de configuration | v1 | Voir la section dédiée |
 | Angle et durée d'ouverture | v2 | Exige le mode Rotation validé |
 | Mise à jour OTA | v2 | Point d'accroche `fw_available` prévu dès la v1 |
 | Reprise de session TLS | v2 | Principal levier d'autonomie restant |
@@ -44,7 +44,7 @@ Le matériel reste celui du premier projet, plus trois composants obligatoires q
 | Condensateur 470 µF faible ESR, entre 3V3 et GND | Absorbe les pointes de 350 mA en émission | Oui |
 | Résistance 220 kΩ entre GPIO2 et GND | Niveau défini sur INT1 si le LIS2DW12 ne la pilote plus | Oui |
 | Pont diviseur 2 × 200 kΩ vers A1 | Tension batterie | Oui |
-| Pont diviseur VBUS vers A0 | Détection USB pour le mode service | Oui |
+| Pont diviseur VBUS vers A0 | Détection USB pour le mode recharge | Oui |
 | Shunt 1 Ω sur le fil négatif de la batterie | Mesure de courant au multimètre | Banc d'essai seulement |
 
 | GPIO | Broche | Usage |
@@ -70,9 +70,12 @@ stateDiagram-v2
     DemarrageFroid --> Initialisation : cause de reset journalisée
     Initialisation --> USB : soft reset LIS2DW12, config NVS, nonce de boot
     state USB <<choice>>
-    USB --> ModeService : USB branché
+    USB --> ModeRecharge : USB branché
     USB --> Transmettre : sinon
-    ModeService --> DemarrageFroid : USB retiré, esp_restart()
+    ModeRecharge --> ModeRecharge : signe de vie toutes les 15 min
+    ModeRecharge --> Portail : BOOT 3 s, ou aucun réseau joignable
+    Portail --> ModeRecharge : connexion réussie ou délai écoulé
+    ModeRecharge --> DemarrageFroid : USB retiré, esp_restart()
     Reveil --> VerifierAccel : minuteur ou mouvement
     VerifierAccel --> Filtre : écart de registres, init complète
     state Filtre <<choice>>
@@ -84,7 +87,7 @@ stateDiagram-v2
     DeepSleep --> Reveil
 ```
 
-Le mode service est le seul état qui ne mène pas au sommeil : il en sort par un redémarrage volontaire. Le code s'organise en modules HAL (alimentation, accéléromètre, WiFi, NVS, BLE, LED) autour d'une logique pure, sans dépendance matérielle, couverte par les tests natifs.
+Le mode recharge est le seul état qui ne mène pas au sommeil : il en sort par un redémarrage volontaire. Le code s'organise en modules HAL (alimentation, accéléromètre, WiFi, NVS, BLE, LED) autour d'une logique pure, sans dépendance matérielle, couverte par les tests natifs.
 
 ## Détection
 
@@ -108,7 +111,7 @@ Séquence `init()`, identique pour les deux modes :
 
 Au réveil normal, pas de soft reset : les registres survivent au deep sleep, c'est mesuré. Une relecture de CTRL1, CTRL4 et CTRL7 suffit, et seul un écart déclenche `init()`. Un changement de mode venu du serveur déclenche aussi `init()`.
 
-En mode Rotation, la référence « fermé » est calibrée au démarrage à froid, après le premier échantillon disponible, et le résultat est journalisé. L'angle et la durée restent en v2.
+En mode Rotation, la référence « fermé » est calibrée au démarrage à froid, après le premier échantillon disponible, et le résultat est journalisé. En v1, tout changement d'orientation est un mouvement, ouverture comme fermeture ; la distinction et la durée d'ouverture restent en v2, avec en vue une alerte « porte de frigo restée ouverte ».
 
 À vérifier dans `lis2dw12_reg.h` avant codage : l'adresse de `ALL_INT_SRC` (`0x3B` attendu) et les valeurs de référence de CTRL3 et CTRL6, à consigner après la première mesure au palier 2.
 
@@ -138,7 +141,7 @@ L'heure se reconstruit à partir d'une ancre fournie par le serveur et d'un comp
 
 **Horloge.** `now = server_time + (compteur_RTC_maintenant − compteur_RTC_à_la_synchro)`. Le compteur retenu doit avancer pendant le deep sleep : `esp_rtc_get_time_us()` fonctionne mais c'est une API interne, à documenter avec la version d'IDF validée. Après chaque synchro et chaque réveil, `settimeofday()` recopie cette valeur dans l'horloge système, que mbedtls utilise pour valider les dates des certificats. Fuseau `EST5EDT,M3.2.0,M11.1.0` réglé au démarrage. Avant la première synchro, `now` vaut 0.
 
-**Filtre.** Un mouvement survenant moins de `filter_window_s` après la dernière transmission est supprimé et compté. `now = 0` ou delta négatif : transmettre et journaliser. `last_tx` s'écrit après le ré-ancrage de l'horloge, jamais avant. Après 5 suppressions consécutives, une transmission est forcée.
+**Filtre.** Un mouvement survenant moins de `filter_window_s` après la dernière transmission est supprimé et compté. `now = 0` ou delta négatif : transmettre et journaliser. `last_tx` s'écrit après le ré-ancrage de l'horloge, jamais avant. Après 5 suppressions consécutives, une transmission est forcée. Un mouvement supprimé reste une activité (ADR 0002) : le capteur mémorise l'instant de la première et de la dernière suppression et les transmet sous forme d'âges relatifs avec le compteur.
 
 | Paramètre | Production | Test rapide | Bornes |
 | --- | --- | --- | --- |
@@ -164,15 +167,17 @@ Une seule requête HTTPS sortante par cycle, identifiée par un nonce de boot al
 | `device_id`, `fw_version` | Identité |
 | `boot_nonce` | `esp_random()` tiré à chaque démarrage à froid, gardé en RTC |
 | `boot_count`, `seq` | Compteurs, informatifs seulement |
-| `kind` | `boot`, `heartbeat`, `motion`, `battery_low` |
+| `kind` | `boot`, `heartbeat`, `motion`, `battery_low` ; seul `motion` est une activité, les autres sont des signes de vie |
 | `wake_cause`, `reset_reason` | Du cycle courant |
 | `battery_mv`, `rssi`, `suppressed` | Mesures |
+| `suppressed_first_age_s`, `suppressed_last_age_s` | Âge de la première et de la dernière suppression |
+| `charging` | Vrai en mode recharge |
 | `queued` | Événements en attente, avec leur âge relatif |
 | `open_angle`, `open_duration_s` | v2 |
 
-Le serveur dédoublonne sur `(device_id, boot_nonce, seq)`, journalise chaque doublon et répond `"duplicate": true` dans ce cas.
+Le serveur dédoublonne sur `(device_id, boot_nonce, seq)`, journalise chaque doublon et répond `"duplicate": true` dans ce cas. Ce point est à valider avec l'agent serveur au palier 4, voir la dernière section.
 
-**Réponse.** `ok`, `server_time`, `config_version`, `config` complet à chaque réponse, `fw_available` réservé à la v2.
+**Réponse.** `ok`, `server_time`, `config_version`, `config` complet à chaque réponse, `fw_available` réservé à la v2. La config porte un champ `verbose_until` : tant qu'il est dans le futur, le capteur journalise en mode verbeux ; passé ce moment, il revient seul au mode normal. Le serveur le règle à 24 h au plus.
 
 **Configuration en trois couches** : valeurs compilées, puis NVS, puis serveur. Le capteur applique la config du serveur dès que `config_version` diffère de la sienne, dans un sens comme dans l'autre, et n'écrit en NVS que dans ce cas. Toute valeur est bornée par le firmware ; un écart corrigé est signalé au serveur. Ce point corrige le bug du mode de détection resté bloqué sur une ancienne valeur.
 
@@ -184,7 +189,7 @@ Chaque donnée est rangée selon ce à quoi elle doit survivre ; `RTC_DATA_ATTR`
 
 | Donnée | Emplacement | Deep sleep | `esp_restart()` | Bouton RESET | Coupure |
 | --- | --- | --- | --- | --- | --- |
-| `seq`, `last_tx`, ancre d'horloge, file, cache WiFi, `boot_nonce` | `RTC_DATA_ATTR` | Oui | Non | Non | Non |
+| `seq`, `last_tx`, ancre d'horloge, file, cache WiFi, `boot_nonce`, instants de suppression | `RTC_DATA_ATTR` | Oui | Non | Non | Non |
 | Diagnostics du dernier cycle : causes, armement, niveau INT1 | `RTC_NOINIT_ATTR` | Oui | Oui | À vérifier | Non |
 | Incidents graves : redémarrage du filet, INT1 bloquée | NVS | Oui | Oui | Oui | Oui |
 | `boot_count`, config, identifiants WiFi, jeton | NVS | Oui | Oui | Oui | Oui |
@@ -213,20 +218,30 @@ Le BLE est arrêté avant chaque sommeil. Un test d'une journée a montré qu'il
 | 3 éclairs | Démarrage à froid |
 | 1 éclair long | Anomalie journalisée ce cycle |
 
-**Lignes obligatoires à chaque cycle**, sur BLE et dans les logs serveur : cause de réveil, cause de reset du démarrage courant, `boot_nonce` et `seq`, décision de filtrage avec son delta, durée de chaque phase (WiFi, TLS, POST), résultat de l'armement avec le niveau d'INT1 lu par `rtc_gpio_get_level()`.
+**Diagnostics à chaque cycle, en champs structurés** dans la charge utile, jamais en texte libre : cause de réveil, cause de reset du démarrage courant, décision de filtrage avec son delta, durée de chaque phase (WiFi, TLS, POST), résultat de l'armement avec le niveau d'INT1 lu par `rtc_gpio_get_level()`. Le texte libre est réservé aux anomalies.
+
+**Mode verbeux.** Activé à distance par `verbose_until` dans la config serveur, il ajoute des lignes de texte détaillées à chaque cycle et expire seul. Il allonge le cycle, c'est accepté puisqu'il est temporaire. En env `test`, les logs BLE sont toujours détaillés.
 
 **Journal du projet.** Dans `CLAUDE.md`, chaque conclusion est marquée MESURÉ ou SUPPOSÉ, avec l'environnement de build et la date. Une hypothèse confirmée par lecture de code reste SUPPOSÉE.
 
-## Mode service et portail captif
+## Mode recharge et portail de configuration
 
-La présence de l'USB est le seul déclencheur du mode service, et son retrait provoque toujours un redémarrage volontaire : un état explicite remplace les variantes « rester éveillé » du premier projet.
+Brancher l'USB suspend la détection, pas les signes de vie (ADR 0001) : le capteur est alors retiré de son objet, et c'est le serveur qui gère l'absence.
 
-- **Entrée** : VBUS lu sur A0 au démarrage à froid et à chaque réveil. Une lecture ADC suffit.
-- **Pendant** : le capteur reste éveillé et se recharge, sans jamais entrer en deep sleep. Il ouvre un point d'accès `Capteur-<nom>` en WPA2, mot de passe unique imprimé sur une étiquette, fermé après 5 min sans activité.
-- **Portail** : DNS générique vers `192.168.4.1`, liste des réseaux détectés, champ mot de passe, choix de l'emplacement, bouton de test. Le test vérifie l'association WiFi puis un POST au serveur, et affiche les deux résultats séparément.
-- **Sortie** : dès que VBUS disparaît, `esp_restart()` volontaire. Ce redémarrage maîtrisé évite aussi l'état incohérent observé après certains débranchements, quelle qu'en soit la cause.
+**Mode recharge**
+- **Entrée** : VBUS lu sur A0 au démarrage à froid et à chaque réveil.
+- **Pendant** : le capteur reste éveillé, ne détecte aucun mouvement et envoie un signe de vie `heartbeat` avec `charging: true` et la tension toutes les 15 min. L'EXT1 n'est pas armé.
+- **Sortie** : dès que VBUS disparaît, `esp_restart()` volontaire, puis cycle normal.
+- **Durée** : 18 à 20 h pour une charge complète, le chargeur débitant 100 à 120 mA (ADR 0004).
 
-Si le portail ne tient pas dans le calendrier de la v1, les identifiants s'inscrivent à l'atelier par une commande série, et le reste du mode service est conservé.
+**Portail de configuration**, uniquement en mode recharge :
+- **Ouverture** par un appui de 3 s sur BOOT, confirmé par la LED, ou automatiquement tant qu'aucun réseau connu n'est joignable depuis 2 min.
+- **Point d'accès** `Capteur-<nom>` en WPA2, mot de passe unique imprimé sur une étiquette. Le capteur continue d'essayer les réseaux connus en arrière-plan.
+- **Fermeture** dès qu'une connexion réussit ; ouvert par BOOT, il se ferme aussi après 10 min sans activité.
+- **Contenu** : DNS générique vers `192.168.4.1`, liste des réseaux détectés, mot de passe, choix de l'emplacement parmi les trois, bouton de test. Le test vérifie l'association WiFi puis un POST au serveur, et affiche les deux résultats séparément.
+- **État usine** (ADR 0003) : tant que la NVS ne contient pas d'identité, le portail ajoute une page de mise en service : `device_id`, jeton, adresse du serveur. Elle ne réapparaît qu'après effacement complet de la flash. Le jeton et le serveur ne sont jamais modifiables autrement.
+
+À vérifier au palier 7 : la lecture du bouton BOOT (GPIO9) en fonctionnement normal sur cette carte.
 
 ## Construction par paliers
 
@@ -239,10 +254,12 @@ Neuf paliers, chacun ajoutant une seule pièce, avec un critère de sortie fixé
 4. **WiFi et vrai serveur.** Protocole complet, `boot_nonce`, file d'attente. Sortie : protocole réussi, aucun doublon signalé par le serveur.
 5. **Horloge, filtre, heartbeats jour et nuit.** Sortie : durées de sommeil rapportées à ±2 s, suppressions visibles, aucun delta négatif.
 6. **NVS et configuration en trois couches.** Sortie : un changement de mode côté serveur appliqué au cycle suivant, `nvs_get_stats()` stable sur 100 démarrages.
-7. **Mode service et portail.** Sortie : configuration du WiFi depuis un téléphone en moins de 3 min, redémarrage propre au retrait de l'USB, 10 fois de suite.
+7. **Mode recharge et portail.** Sortie : signes de vie de charge toutes les 15 min ; portail ouvert par BOOT et automatiquement sans réseau ; mise en service d'un capteur en état usine ; configuration du WiFi depuis un téléphone en moins de 3 min ; redémarrage propre au retrait de l'USB, 10 fois de suite.
 8. **Endurance.** Valeurs de production, 72 h avec deux nuits. Sortie : tous les heartbeats à l'heure prévue, chaque mouvement détecté, `boot_count` inchangé.
 
-Un commit par palier, avec le résultat du test dans son message.
+Un commit par ticket, avec le résultat du test dans son message.
+
+Découpage réel en tickets (`.scratch/capteur-veille/issues/`) : 01 ossature du dépôt ; palier 0 → 02 ; 1 → 03 ; 2 → 04 ; 3 → 05 (la bascule Motion ⇄ Rotation à chaud passe au 10) ; 4 → 06 (contrat serveur), 07 (WiFi), 08 (protocole) ; 5 → 09 ; 6 → 10 ; 7 → 11 (recharge), 12 (portail), 13 (mise en service) ; 8 → 14. Les identifiants WiFi restent dans un fichier local jusqu'au ticket 10.
 
 ## Protocole de test et de flash
 
@@ -289,3 +306,13 @@ Chaque ligne ci-dessous a coûté au moins une journée au premier projet.
 | Certificat feuille épinglé | Un renouvellement casse tous les capteurs |
 | Marquer un bug « résolu » sans citer la mesure | Trois fausses conclusions dans le premier projet |
 
+## À trancher avec l'agent serveur au palier 4
+
+Ces points touchent le serveur et seront discutés avec son agent avant de brancher le capteur au vrai serveur.
+
+1. Accepter l'ancien et le nouveau format de requête pendant la transition : `boot_nonce` optionnel, repli sur `(boot_count, seq)` s'il manque.
+2. Compter les mouvements supprimés comme activité, en plaçant leurs âges dans les fenêtres des règles d'inactivité.
+3. Suspendre les règles d'inactivité d'un capteur en charge, et alerter si la charge dépasse 30 h.
+4. Notifier « capteur chargé, il peut être remis en place » quand la tension reste au-dessus de 4150 mV sur trois mesures consécutives.
+5. Pour une inactivité dans les 24 h suivant une recharge, un message distinct : « capteur récemment rechargé, vérifier qu'il a été remis en place ».
+6. Exposer `verbose_until` dans la config, plafonné à 24 h.

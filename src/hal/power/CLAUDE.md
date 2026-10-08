@@ -16,7 +16,7 @@ Spec : § Sommeil et réveil, § Matériel, § Interdits et pièges connus.
   `esp_restart()` : il y est effacé.
 - L'heure ne se lit pas par `time()` sans ré-ancrage : l'horloge
   système ne suit pas le deep sleep.
-- `esp_restart()` n'est permis qu'en sortie du mode service (retrait
+- `esp_restart()` n'est permis qu'en sortie du mode recharge (retrait
   de l'USB détecté sur A0).
 
 ## Mesures

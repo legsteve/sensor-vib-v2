@@ -1,22 +1,20 @@
 # Avancement
 
-## Palier courant
-- **Palier** : P0 — Banc d'essai
-- **Statut** : à démarrer
-- **Fiche** : docs/paliers/P0.md
-- **Prochaine action** : /palier-debut, relecture de la fiche P0, plan à valider.
+Message d'ouverture de chaque session (toujours identique, après /clear) :
+« Implémente le ticket indiqué dans docs/PROGRESS.md. »
 
-## Dernier résultat de test
-Aucun (aucun code de firmware à ce stade).
+## Ticket courant
+01 — .scratch/capteur-veille/issues/01-ossature-du-depot.md
+Statut : à démarrer
 
-## Hypothèses ouvertes
-- Version de la plateforme PlatformIO (pioarduino) et options CDC USB
-  pour l'ESP32-C6 : non vérifiées par un build (voir platformio.ini).
+## Prochaine action
+Proposer le plan du ticket 01 et attendre l'accord.
+
+## En parallèle (humain)
+06 — contrat de protocole avec l'agent serveur. Bloque seulement le 07.
 
 ## Problèmes hors périmètre notés
-_(Un problème constaté hors du palier courant se note ici, il ne se corrige pas.)_
+(aucun)
 
-## Historique des paliers
-| Palier | Statut | Date | Commit | Résultat du test |
-| --- | --- | --- | --- | --- |
-| P0 | à démarrer | — | — | — |
+## Tickets terminés
+(aucun)
